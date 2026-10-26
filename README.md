@@ -1,208 +1,127 @@
-# Restaurant Recommendation System
+# Restaurant Recommender & AI Concierge
 
-A restaurant menu recommendation system that uses machine learning to suggest food and drink items based on user preferences.
+A hybrid recommendation engine for restaurant menus, paired with a multilingual voice/chat concierge grounded in the menu. Built end-to-end: data cleaning, five recommendation models plus an ensemble, offline evaluation, a Flask inference API, and a Node.js web app with LLM and speech integrations.
 
-## Features
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?logo=scikitlearn&logoColor=white)
+![Flask](https://img.shields.io/badge/Flask-000000?logo=flask&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-339933?logo=nodedotjs&logoColor=white)
+![LLMs](https://img.shields.io/badge/LLMs-Claude%20%7C%20Llama%203.3%20%7C%20Gemini-6E56CF)
 
-- Fuzzy matching for food and drink recommendations
-- WordNet-based synonym expansion for better matching
-- TF-IDF vectorization for similarity calculations
-- Web interface for user preferences
-- RESTful API endpoints
+<img src="presentation/assets/07_recommendation_cards.png" width="560" alt="Recommendation cards with match scores">
 
-## Tech Stack
+## Highlights
 
-- **Backend**: Flask (Python) - Port 5008
-- **Frontend**: Express.js (Node.js) - Port 3000
-- **ML Libraries**: scikit-learn, pandas, numpy, fuzzywuzzy
-- **Template Engine**: EJS
+- **Six ranking strategies behind one API:** TF-IDF content similarity, fuzzy matching with WordNet query expansion, SVD matrix factorisation, Bayesian Personalized Ranking (BPR), time-decayed popularity, and a weighted hybrid that redistributes weight when a model lacks data.
+- **Learned food → drink pairing:** a bilinear compatibility model trained with BPR on co-occurrence pairs over TF-IDF + SVD item embeddings, with co-occurrence gating to suppress noisy pairings.
+- **Cold start handled:** seed taste profiles are generated from the menu itself (sweet/savory foods, coffee/tea/refreshing drinks), so collaborative models work from the first request on any menu.
+- **Online learning loop:** views, likes and orders are logged through `/api/track` and the models retrain via `/api/retrain`.
+- **Menu-grounded AI concierge:** chat and voice ordering in 18 languages. The LLM gets the live menu as context and can add items to the cart via structured `[ADD_TO_CART: …]` tags. Provider fallback chain: **Claude Haiku 4.5 → Llama 3.3 70B / 3.1 8B (Groq) → Gemini 2.0 Flash**.
+- **Speech:** Whisper large-v3 (Groq) transcription with Gemini fallback; neural text-to-speech with pre-generation to cut reply latency.
 
-## Prerequisites
+## Offline evaluation
 
-- Python 3.9+ 
-- Node.js 
-- npm
+Leave-one-out ranking evaluation (`evaluation/offline_eval.py`): for each user, one liked item is held out and every model ranks the full menu (221 items).
 
-## Installation & Setup
+| Model | HR@5 | HR@10 | NDCG@10 |
+|---|---|---|---|
+| Random | 0.022 | 0.022 | 0.009 |
+| Popularity (time-decayed) | 0.457 | 0.457 | 0.457 |
+| Content (TF-IDF user profile) | 0.457 | 0.609 | 0.449 |
+| Collaborative (SVD) | 0.630 | 0.739 | 0.583 |
+| BPR | 0.717 | 0.761 | 0.708 |
+| SVD + BPR blend (production personalised feed) | 0.783 | 0.804 | 0.740 |
+| **Hybrid (SVD + BPR + content + popularity)** | **0.804** | **0.826** | **0.769** |
 
-### 1. Install Python Dependencies
+> **Caveat:** most of the interaction log is bootstrapped from synthetic taste archetypes (46 users, ~1k interactions), so these numbers compare strategies against each other rather than estimate live accuracy. Re-run the script as real interactions accumulate.
 
-```bash
-# Activate the virtual environment
-source venv/bin/activate
+## Architecture
 
-# Install missing dependencies
-pip install flask-cors nltk
+```mermaid
+flowchart LR
+    U[Browser<br/>UI · chat · voice] --> N[Node.js / Express<br/>EJS views, cart, orders]
+    N -->|REST| F[Flask API]
+    F --> H[HybridRecommender]
+    H --> C[Content<br/>TF-IDF + cosine]
+    H --> Z[Fuzzy<br/>+ WordNet]
+    H --> S[Collaborative<br/>Truncated SVD]
+    H --> B[BPR<br/>pairwise SGD]
+    H --> P[Popularity<br/>time-decayed]
+    H --> D[Drink pairing<br/>bilinear BPR]
+    H <--> I[(interactions.json)]
+    N --> L{LLM router}
+    L --> L1[Claude Haiku 4.5]
+    L -.fallback.-> L2[Llama 3.3 via Groq]
+    L -.fallback.-> L3[Gemini 2.0 Flash]
+    N --> W[Whisper large-v3 STT]
+    N --> T[Neural TTS]
 ```
 
-### 2. Install Node.js Dependencies
+The Express server starts the Flask API automatically on a free port (or uses `FLASK_API` if set), so a single `npm start` runs the whole stack.
+
+## How the hybrid score works
+
+Each engine's scores are min-max normalised and combined:
+
+| Engine | Signal | Default weight |
+|---|---|---|
+| Content-based | TF-IDF over name, category and description; query expanded with WordNet synonyms | 0.45 |
+| Fuzzy | Levenshtein similarity on item names | 0.20 |
+| Collaborative | Truncated SVD on the user × item implicit-feedback matrix | 0.15 |
+| BPR | Pairwise ranking loss, SGD on user/item embeddings | 0.10 |
+| Popularity | Interaction-weighted (view < click < like < order), 5%/day decay | 0.10 |
+
+When the collaborative models are untrained for a user, their weight shifts to the content model instead of returning empty results.
+
+## Quickstart
 
 ```bash
-# Install all Node.js packages
+git clone https://github.com/utkuemec/restaurant-recommender.git
+cd restaurant-recommender
+
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 npm install
 
-# Install EJS template engine
-npm install ejs
+cp .env.example .env      # optional: add LLM keys to enable the concierge
+npm start                 # http://localhost:3001
 ```
 
-## Running the Application
-
-### Quick Start (Easy Method)
-
-Simply run the startup script:
+The recommender works without any API keys; the concierge activates for whichever provider keys are present (`npm run verify-keys` checks them).
 
 ```bash
-./start.sh
+python evaluation/offline_eval.py   # reproduce the evaluation table
 ```
 
-To stop the servers:
+## API (Flask)
 
-```bash
-./stop.sh
-```
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/recommend` | Food and drink recommendations for a free-text query (`strategy`: hybrid, content, fuzzy, collaborative, bpr, popularity) |
+| GET | `/api/personalized?user_id=` | Personalised feed from SVD + BPR |
+| GET | `/api/similar?item=` | Item-to-item similar dishes |
+| GET | `/api/popular` | Trending items |
+| GET | `/api/chefs-picks` | Top picks per category |
+| POST | `/api/track` | Log a view / like / order / rating |
+| POST | `/api/retrain` | Retrain collaborative models on logged interactions |
+| GET | `/api/stats` | Model status and interaction counts |
 
-### Manual Start (Advanced)
-
-You need to run **TWO servers** simultaneously:
-
-#### Terminal 1: Start Flask Backend
-
-```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Run Flask server (Port 5008)
-python app.py
-```
-
-You should see:
-```
- * Running on http://127.0.0.1:5008
-```
-
-#### Terminal 2: Start Node.js Frontend
-
-```bash
-# Run Express server (Port 3000)
-npm start
-# OR
-node server.js
-```
-
-You should see:
-```
-Server is running on http://localhost:3000
-```
-
-## Usage
-
-1. Open your browser and navigate to: **http://localhost:3000**
-2. Enter your food and drink preferences on the form
-3. Submit the form to get personalized recommendations
-4. View recommended foods and drinks based on your preferences
-
-## API Endpoints
-
-### Flask Backend (Port 5008)
-
-- `GET /api/menu` - Get full menu (foods and drinks)
-- `POST /api/recommend` - Get recommendations based on food and drink preferences
-  - Body: `{ "food": "chicken", "drink": "coffee" }`
-- `POST /api/sort_menu` - Sort menu by preferred items
-  - Body: `{ "preferred_items": ["item1", "item2"] }`
-
-### Express Frontend (Port 3000)
-
-- `GET /` - Main preferences form
-- `POST /preferences` - Submit preferences and view recommendations
-
-## Project Structure
+## Project structure
 
 ```
-RestaurantAnalyze/
-├── app.py                 # Flask backend server
-├── server.js              # Express frontend server
-├── package.json           # Node.js dependencies
-├── kozbingol_menu.csv     # Restaurant menu data
-├── views/                 # EJS templates
-│   ├── preferences.ejs    # Preferences input form
-│   └── recommendations.ejs # Recommendations display
-├── public/                # Static files
-├── actions/               # Rasa actions (if using chatbot)
-├── data/                  # Rasa training data
-├── domain.yml             # Rasa domain file
-└── venv/                  # Python virtual environment
+├── recommendation_engine.py   # all models + HybridRecommender
+├── app.py                     # Flask API, menu cleaning
+├── server.js                  # Express app, LLM router, speech endpoints
+├── evaluation/offline_eval.py # leave-one-out HR@K / NDCG@K
+├── public/                    # chat widget, voice concierge, cart
+├── views/                     # EJS templates
+├── data/, domain.yml          # Rasa NLU prototype (optional)
+└── user_data/interactions.json
 ```
 
-## Data File
+## Roadmap
 
-The application uses `kozbingol_menu.csv` with the following structure:
-- Category
-- Item
-- Description
-- Price
-
-## Troubleshooting
-
-### Port Already in Use Error
-
-**Problem:** `Port 5008 is in use` or `Port 3000 is in use`
-
-**Solution:**
-```bash
-# Kill processes on the ports
-lsof -ti:5008 | xargs kill -9
-lsof -ti:3000 | xargs kill -9
-
-# OR use the stop script
-./stop.sh
-```
-
-### Node.js EPERM Error
-
-**Problem:** `Error: listen EPERM: operation not permitted 0.0.0.0:3000`
-
-**Solution:** This was fixed by binding to `127.0.0.1` instead of `0.0.0.0`. If you still see this error, make sure `server.js` line 47 reads:
-```javascript
-app.listen(3000, '127.0.0.1', function() {
-```
-
-### NLTK SSL Certificate Error
-
-**Problem:** `[nltk_data] Error loading wordnet: certificate verify failed`
-
-**Solution:** This is already fixed in `app.py` with SSL certificate bypass. The code automatically handles downloading WordNet data.
-
-### Flask server won't start
-- Make sure virtual environment is activated: `source venv/bin/activate`
-- Check if port 5008 is already in use: `lsof -i :5008`
-- Verify `kozbingol_menu.csv` exists in the project root
-
-### Node.js server won't start
-- Make sure all dependencies are installed: `npm install`
-- Check if port 3000 is already in use: `lsof -i :3000`
-- Verify EJS is installed: `npm list ejs`
-
-### Recommendations not working
-- Ensure both servers are running
-- Check Flask backend is accessible at http://127.0.0.1:5008
-- Verify menu CSV file is properly formatted
-
-### Check Server Status
-```bash
-# Check if Flask is running
-curl http://127.0.0.1:5008/api/menu
-
-# Check if Node.js is running
-curl http://localhost:3000
-
-# Check running processes
-ps aux | grep -E "(python app.py|node server.js)" | grep -v grep
-```
-
-## Notes
-
-- The Flask backend must be running before submitting preferences on the frontend
-- NLTK will download WordNet data on first run
-- Some commented code exists in `app.py` for alternative recommendation approaches
-
+- Replace synthetic seed data with logged sessions and report time-split evaluation
+- Sentence-embedding retrieval (e.g. `all-MiniLM-L6-v2`) as an alternative to TF-IDF
+- Tune ensemble weights on validation data instead of fixed defaults
+- Containerise (Docker) and deploy a public demo
