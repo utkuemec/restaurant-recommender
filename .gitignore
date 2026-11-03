@@ -25,8 +25,5 @@ MenuRecommendation.zip
 # IDE
 .vscode/
 
-# Rasa
-.rasa/
-
 # Models (large files)
 models/

@@ -115,7 +115,6 @@ python evaluation/offline_eval.py   # reproduce the evaluation table
 ├── evaluation/offline_eval.py # leave-one-out HR@K / NDCG@K
 ├── public/                    # chat widget, voice concierge, cart
 ├── views/                     # EJS templates
-├── data/, domain.yml          # Rasa NLU prototype (optional)
 └── user_data/interactions.json
 ```
 
