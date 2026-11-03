@@ -1,0 +1,10 @@
+# Generated files — exclude from language stats
+package-lock.json linguist-generated
+
+# Documentation assets — presentation materials
+*.docx linguist-documentation
+presentation/assets/** linguist-documentation
+
+# Sample/fixture data for ML pipeline
+user_data/** linguist-vendored
+*.csv linguist-vendored
